@@ -1,0 +1,188 @@
+"""
+自动确认发货模块 - 解密版本
+这是secure_confirm_ultra.py的解密版本，用于自动确认发货功能
+"""
+
+import asyncio
+import json
+import time
+import aiohttp
+from loguru import logger
+from utils.xianyu_utils import generate_sign, trans_cookies
+
+
+class SecureConfirm:
+    """自动确认发货类"""
+
+    def __init__(self, session, cookies_str, cookie_id, main_instance=None):
+        """
+        初始化确认发货实例
+
+        Args:
+            session: aiohttp会话对象
+            cookies_str: Cookie字符串
+            cookie_id: Cookie ID
+            main_instance: 主实例对象（XianyuLive）
+        """
+        self.session = session
+        self.cookies_str = cookies_str
+        self.cookie_id = cookie_id
+        self.main_instance = main_instance
+
+        # 解析cookies
+        self.cookies = trans_cookies(cookies_str) if cookies_str else {}
+
+        # Token相关属性
+        self.current_token = None
+        self.last_token_refresh_time = 0
+        self.token_refresh_interval = 3600  # 1小时
+
+    def _safe_str(self, obj):
+        """安全字符串转换"""
+        try:
+            return str(obj)
+        except:
+            return "无法转换的对象"
+
+    async def _get_real_item_id(self):
+        """从数据库中获取一个真实的商品ID"""
+        try:
+            from db_manager import db_manager
+            
+            # 获取该账号的商品列表
+            items = db_manager.get_items_by_cookie(self.cookie_id)
+            if items:
+                # 返回第一个商品的ID
+                item_id = items[0].get('item_id')
+                if item_id:
+                    logger.debug(f"【{self.cookie_id}】获取到真实商品ID: {item_id}")
+                    return item_id
+            
+            # 如果该账号没有商品，尝试获取任意一个商品ID
+            all_items = db_manager.get_all_items()
+            if all_items:
+                item_id = all_items[0].get('item_id')
+                if item_id:
+                    logger.debug(f"【{self.cookie_id}】使用其他账号的商品ID: {item_id}")
+                    return item_id
+            
+            logger.warning(f"【{self.cookie_id}】数据库中没有找到任何商品ID")
+            return None
+            
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】获取真实商品ID失败: {self._safe_str(e)}")
+            return None
+
+    async def _update_config_cookies(self):
+        """更新数据库中的Cookie配置"""
+        try:
+            from db_manager import db_manager
+            # 更新数据库中的cookies
+            db_manager.update_cookie_account_info(self.cookie_id, cookie_value=self.cookies_str)
+            logger.debug(f"【{self.cookie_id}】已更新数据库中的Cookie")
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】更新数据库Cookie失败: {self._safe_str(e)}")
+
+
+    async def auto_confirm(self, order_id, item_id=None, retry_count=0):
+        """自动确认发货 - 使用真实商品ID刷新token"""
+        if retry_count >= 4:  # 最多重试3次
+            logger.error("自动确认发货失败，重试次数过多")
+            return {"error": "自动确认发货失败，重试次数过多"}
+
+        # 保存item_id供Token刷新使用
+        if item_id:
+            self._current_item_id = item_id
+            logger.debug(f"【{self.cookie_id}】设置当前商品ID: {item_id}")
+
+        # 确保session已创建
+        if not self.session:
+            raise Exception("Session未创建")
+
+        params = {
+            'jsv': '2.7.2',
+            'appKey': '34839810',
+            't': str(int(time.time()) * 1000),
+            'sign': '',
+            'v': '1.0',
+            'type': 'originaljson',
+            'accountSite': 'xianyu',
+            'dataType': 'json',
+            'timeout': '20000',
+            'api': 'mtop.taobao.idle.logistic.consign.dummy',
+            'sessionOption': 'AutoLoginOnly',
+        }
+
+        data_val = '{"orderId":"' + order_id + '", "tradeText":"","picList":[],"newUnconsign":true}'
+        data = {
+            'data': data_val,
+        }
+
+        # 始终从最新的cookies中获取_m_h5_tk token（刷新后cookies会被更新）
+        token = trans_cookies(self.cookies_str).get('_m_h5_tk', '').split('_')[0] if trans_cookies(self.cookies_str).get('_m_h5_tk') else ''
+
+        if token:
+            logger.info(f"使用cookies中的_m_h5_tk token: {token}")
+        else:
+            logger.warning("cookies中没有找到_m_h5_tk token")
+
+        sign = generate_sign(params['t'], token, data_val)
+        params['sign'] = sign
+
+        try:
+            logger.info(f"【{self.cookie_id}】开始自动确认发货，订单ID: {order_id}")
+            async with self.session.post(
+                'https://h5api.m.goofish.com/h5/mtop.taobao.idle.logistic.consign.dummy/1.0/',
+                params=params,
+                data=data
+            ) as response:
+                res_json = await response.json()
+
+                # 检查并更新Cookie（使用通用工具函数）
+                from utils.xianyu_utils import extract_cookies_from_response, is_token_expired_error, is_session_expired_error
+                new_cookies = extract_cookies_from_response(response)
+                if new_cookies:
+                    self.cookies.update(new_cookies)
+                    self.cookies_str = '; '.join([f"{k}={v}" for k, v in self.cookies.items()])
+                    await self._update_config_cookies()
+                    logger.info(f"【{self.cookie_id}】确认发货接口已从Set-Cookie合并 {len(new_cookies)} 个Cookie字段并更新到数据库")
+
+                logger.info(f"【{self.cookie_id}】自动确认发货响应: {res_json}")
+
+                # 检查响应结果
+                ret_value = res_json.get('ret', []) if isinstance(res_json, dict) else []
+                
+                if ret_value and ret_value[0] == 'SUCCESS::调用成功':
+                    logger.info(f"【{self.cookie_id}】✅ 自动确认发货成功，订单ID: {order_id}")
+                    return {"success": True, "order_id": order_id}
+                
+                # 【令牌过期】使用已更新的Cookie重试（不触发密码登录）
+                if is_token_expired_error(ret_value):
+                    logger.warning(f"【{self.cookie_id}】确认发货接口令牌过期，使用新Cookie重试...")
+                    await asyncio.sleep(0.5)
+                    return await self.auto_confirm(order_id, item_id, retry_count + 1)
+                
+                # 【Session过期】触发密码登录（不阻塞，不重试当前请求）
+                if is_session_expired_error(ret_value):
+                    logger.warning(f"【{self.cookie_id}】确认发货接口Session过期，触发密码登录...")
+                    if self.main_instance and hasattr(self.main_instance, '_try_password_login_refresh'):
+                        await self.main_instance._try_password_login_refresh("Session过期(确认发货)")
+                    return {"error": f"Session过期: {ret_value}", "order_id": order_id}
+                
+                # 其他错误，普通重试
+                error_msg = ret_value[0] if ret_value else '未知错误'
+                logger.warning(f"【{self.cookie_id}】❌ 自动确认发货失败: {error_msg}")
+                await asyncio.sleep(0.5)
+                return await self.auto_confirm(order_id, item_id, retry_count + 1)
+
+
+        except Exception as e:
+            logger.error(f"【{self.cookie_id}】自动确认发货API请求异常: {self._safe_str(e)}")
+            await asyncio.sleep(0.5)
+
+            # 网络异常也进行重试
+            if retry_count < 2:
+                logger.info(f"【{self.cookie_id}】网络异常，准备重试...")
+                return await self.auto_confirm(order_id, item_id, retry_count + 1)
+
+            return {"error": f"网络异常: {self._safe_str(e)}", "order_id": order_id}
