@@ -23,8 +23,10 @@ export const getUsers = async (): Promise<{ success: boolean; data?: User[] }> =
   return { success: true, data: users }
 }
 
-// TODO: 后端暂未实现 POST /admin/users 接口
-// export const addUser = ...
+// 添加用户
+export const addUser = (data: { username: string; email: string; password: string }): Promise<ApiResponse> => {
+  return post('/admin/users', data)
+}
 
 // TODO: 后端暂未实现 PUT /admin/users/{userId} 接口
 // export const updateUser = ...

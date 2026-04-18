@@ -49,8 +49,8 @@ class AutoReplyPauseManager:
             from db_manager import db_manager
             pause_minutes = db_manager.get_cookie_pause_duration(cookie_id)
         except Exception as e:
-            logger.error(f"获取账号 {cookie_id} 暂停时间失败: {e}，使用默认10分钟")
-            pause_minutes = 10
+            logger.error(f"获取账号 {cookie_id} 暂停时间失败: {e}，使用默认0分钟")
+            pause_minutes = 0
 
         # 如果暂停时间为0，表示不暂停
         if pause_minutes == 0:
@@ -3177,16 +3177,18 @@ class XianyuLive:
                 logger.info(f"【{self.cookie_id}】检查商品默认回复: item_id={item_id}, cookie_id={self.cookie_id}")
                 item_default_reply = db_manager.get_item_default_reply(self.cookie_id, item_id)
                 logger.info(f"【{self.cookie_id}】商品默认回复查询结果: {item_default_reply}")
-                if item_default_reply and item_default_reply.get('reply_content', False):
+                if item_default_reply and item_default_reply.get('enabled', True):
                     reply_content = item_default_reply.get('reply_content', '')
+                    reply_image_url = item_default_reply.get('reply_image_url', '')
+                    reply_once = item_default_reply.get('reply_once', False)
 
                     # 如果文字和图片都为空，返回空回复标记
-                    if (not reply_content or reply_content.strip() == '') and (True):
+                    if (not reply_content or reply_content.strip() == '') and (not reply_image_url or reply_image_url.strip() == ''):
                         logger.info(f"【{self.cookie_id}】商品 {item_id} 默认回复内容和图片都为空，不进行回复")
                         return "EMPTY_REPLY"
 
                     # 检查"只回复一次"功能（商品级别）
-                    if True and chat_id:
+                    if reply_once and chat_id:
                         if db_manager.has_default_reply_record(self.cookie_id, chat_id, item_id):
                             logger.info(f"【{self.cookie_id}】商品 {item_id} 已对用户 {chat_id} 回复过，跳过（只回复一次）")
                             return "ALREADY_REPLIED"
@@ -3206,12 +3208,15 @@ class XianyuLive:
                             formatted_reply = reply_content
 
                     # 如果开启了"只回复一次"功能，记录这次回复（商品级别）
-                    if True and chat_id:
+                    if reply_once and chat_id:
                         db_manager.add_default_reply_record(self.cookie_id, chat_id, item_id)
                         logger.info(f"【{self.cookie_id}】记录商品默认回复: item_id={item_id}, chat_id={chat_id}")
 
-                    logger.info(f"【{self.cookie_id}】使用商品默认回复: 商品ID={item_id}, 文字={formatted_reply}")
-                    return {'text': formatted_reply}
+                    logger.info(f"【{self.cookie_id}】使用商品默认回复: 商品ID={item_id}, 文字={formatted_reply}, 图片={reply_image_url}")
+                    return {
+                        'text': formatted_reply,
+                        'image_url': reply_image_url if reply_image_url and reply_image_url.strip() else None
+                    }
 
             # 2. 获取账号级别的默认回复设置
             default_reply_settings = db_manager.get_default_reply(self.cookie_id)
@@ -4667,30 +4672,36 @@ class XianyuLive:
                     logger.error(f"获取订单规格信息失败: {self._safe_str(e)}，将跳过自动发货")
                     return None
 
-            # 按指定商品精确匹配发货规则：不再依赖关键词模糊匹配
+            # 智能匹配发货规则：多规格商品只匹配多规格卡券，非多规格商品只匹配非多规格卡券
             delivery_rules = []
 
             if is_multi_spec:
+                # 多规格商品：只匹配多规格发货规则
                 if spec_name and spec_value:
-                    logger.info(f"多规格商品，按指定商品精确匹配发货规则: cookie_id={self.cookie_id}, item_id={item_id}, spec={spec_name}:{spec_value}")
-                    delivery_rules = db_manager.get_delivery_rules_by_item_and_spec(self.cookie_id, item_id, spec_name, spec_value)
-
+                    logger.info(f"多规格商品，尝试匹配多规格发货规则: {search_text[:50]}... [{spec_name}:{spec_value}]")
+                    delivery_rules = db_manager.get_delivery_rules_by_keyword_and_spec(search_text, spec_name, spec_value)
+                    # 过滤只保留多规格卡券
+                    delivery_rules = [r for r in delivery_rules if r.get('is_multi_spec')]
+                    
                     if delivery_rules:
                         logger.info(f"✅ 找到匹配的多规格发货规则: {len(delivery_rules)}个")
                     else:
-                        logger.warning(f"❌ 多规格商品未找到指定商品发货规则，跳过自动发货")
+                        logger.warning(f"❌ 多规格商品未找到匹配的多规格发货规则，跳过自动发货")
                         return None
                 else:
                     logger.warning(f"❌ 多规格商品但无规格信息，跳过自动发货")
                     return None
             else:
-                logger.info(f"非多规格商品，按指定商品精确匹配发货规则: cookie_id={self.cookie_id}, item_id={item_id}")
-                delivery_rules = db_manager.get_delivery_rules_by_item(self.cookie_id, item_id)
-
+                # 非多规格商品：只匹配非多规格发货规则
+                logger.info(f"非多规格商品，尝试匹配普通发货规则: {search_text[:50]}...")
+                delivery_rules = db_manager.get_delivery_rules_by_keyword(search_text)
+                # 过滤只保留非多规格卡券
+                delivery_rules = [r for r in delivery_rules if not r.get('is_multi_spec')]
+                
                 if delivery_rules:
                     logger.info(f"✅ 找到匹配的普通发货规则: {len(delivery_rules)}个")
                 else:
-                    logger.warning(f"❌ 非多规格商品未找到指定商品发货规则，跳过自动发货")
+                    logger.warning(f"❌ 非多规格商品未找到匹配的普通发货规则，跳过自动发货")
                     return None
 
             # 检查匹配到的卡券数量，只有唯一匹配时才自动发货
@@ -4705,7 +4716,7 @@ class XianyuLive:
 
             # 使用唯一匹配的规则
             rule = delivery_rules[0]
-            logger.info(f"✅ 唯一匹配发货规则: item_id={rule.get('item_id') or item_id} -> {rule['card_name']} ({rule['card_type']})")
+            logger.info(f"✅ 唯一匹配发货规则: {rule['keyword']} -> {rule['card_name']} ({rule['card_type']})")
 
             # 保存商品信息到数据库（需要有商品标题才保存）
             # 尝试获取商品标题
@@ -6990,48 +7001,113 @@ class XianyuLive:
                     logger.info(f"【{self.cookie_id}】当前活跃消息处理任务数: {self.active_message_tasks}")
 
     def _extract_message_id(self, message_data: dict) -> str:
-        """
-        从消息数据中提取消息ID，用于去重
-        
-        Args:
-            message_data: 原始消息数据
-            
-        Returns:
-            消息ID字符串，如果无法提取则返回None
-        """
+        """从消息数据中提取消息ID，用于去重"""
         try:
-            # 尝试从 message['1']['10']['bizTag'] 中提取 messageId
-            if isinstance(message_data, dict) and "1" in message_data:
-                message_1 = message_data.get("1")
-                if isinstance(message_1, dict) and "10" in message_1:
-                    message_10 = message_1.get("10")
-                    if isinstance(message_10, dict) and "bizTag" in message_10:
-                        biz_tag = message_10.get("bizTag", "")
-                        if isinstance(biz_tag, str):
-                            # bizTag 是 JSON 字符串，格式如: '{"sourceId":"S:1","messageId":"984f323c719d4cd0a7b993a0769a33b6"}'
-                            try:
-                                import json
-                                biz_tag_dict = json.loads(biz_tag)
-                                if isinstance(biz_tag_dict, dict) and "messageId" in biz_tag_dict:
-                                    return biz_tag_dict.get("messageId")
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                        
-                        # 如果 bizTag 解析失败，尝试从 extJson 中提取
-                        if "extJson" in message_10:
-                            ext_json = message_10.get("extJson", "")
-                            if isinstance(ext_json, str):
-                                try:
-                                    import json
-                                    ext_json_dict = json.loads(ext_json)
-                                    if isinstance(ext_json_dict, dict) and "messageId" in ext_json_dict:
-                                        return ext_json_dict.get("messageId")
-                                except (json.JSONDecodeError, TypeError):
-                                    pass
+            if not isinstance(message_data, dict):
+                return None
+
+            candidate_nodes = []
+            message_1 = message_data.get("1")
+            message_4 = message_data.get("4")
+            if isinstance(message_1, dict) and isinstance(message_1.get("10"), dict):
+                candidate_nodes.append(message_1.get("10"))
+            if isinstance(message_4, dict):
+                candidate_nodes.append(message_4)
+
+            for node in candidate_nodes:
+                biz_tag = node.get("bizTag", "")
+                if isinstance(biz_tag, str) and biz_tag:
+                    try:
+                        biz_tag_dict = json.loads(biz_tag)
+                        if isinstance(biz_tag_dict, dict) and biz_tag_dict.get("messageId"):
+                            return biz_tag_dict.get("messageId")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                ext_json = node.get("extJson", "")
+                if isinstance(ext_json, str) and ext_json:
+                    try:
+                        ext_json_dict = json.loads(ext_json)
+                        if isinstance(ext_json_dict, dict) and ext_json_dict.get("messageId"):
+                            return ext_json_dict.get("messageId")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+                for key in ("messageId", "id", "uuid"):
+                    value = node.get(key)
+                    if isinstance(value, str) and value:
+                        return value
         except Exception as e:
             logger.debug(f"【{self.cookie_id}】提取消息ID失败: {self._safe_str(e)}")
-        
         return None
+
+    def _extract_chat_message_info(self, message):
+        """提取聊天消息核心字段，兼容旧结构 message['1']['10'] 和新结构 message['4']。"""
+        try:
+            if not isinstance(message, dict):
+                return None
+
+            message_1 = message.get("1") if isinstance(message.get("1"), dict) else {}
+            message_10 = message_1.get("10") if isinstance(message_1.get("10"), dict) else {}
+            message_4 = message.get("4") if isinstance(message.get("4"), dict) else {}
+
+            send_message = (
+                message_4.get("reminderContent")
+                or message_4.get("content")
+                or message_10.get("reminderContent")
+                or message_10.get("content")
+                or ""
+            )
+            if isinstance(send_message, (dict, list)):
+                send_message = json.dumps(send_message, ensure_ascii=False)
+            send_message = str(send_message).strip()
+
+            send_user_id = message_4.get("senderUserId") or message_10.get("senderUserId") or ""
+            send_user_name = (
+                message_4.get("senderNick")
+                or message_4.get("reminderTitle")
+                or message_10.get("senderNick")
+                or message_10.get("reminderTitle")
+                or "未知用户"
+            )
+            chat_id_raw = (
+                message.get("2")
+                or message_1.get("2")
+                or message_4.get("cid")
+                or message_4.get("chatId")
+                or ""
+            )
+            chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
+            create_time = message_1.get("5") or message.get("5") or message_4.get("createTime") or int(time.time() * 1000)
+            try:
+                create_time = int(create_time)
+            except Exception:
+                create_time = int(time.time() * 1000)
+            session_type = str(message_4.get("sessionType") or message_10.get("sessionType") or "1")
+
+            if not send_message:
+                return None
+
+            if not send_user_id:
+                send_user_id = "unknown"
+
+            return {
+                'create_time': create_time,
+                'send_user_name': send_user_name,
+                'send_user_id': send_user_id,
+                'send_message': send_message,
+                'chat_id': chat_id,
+                'session_type': session_type,
+                'message_10': message_10,
+                'message_4': message_4,
+            }
+        except Exception as e:
+            logger.debug(f"【{self.cookie_id}】提取聊天消息信息失败: {self._safe_str(e)}")
+            return None
+
+    def is_chat_message(self, message):
+        """判断是否为用户聊天消息"""
+        return self._extract_chat_message_info(message) is not None
 
     async def _schedule_debounced_reply(self, chat_id: str, message_data: dict, websocket, 
                                        send_user_name: str, send_user_id: str, send_message: str,
@@ -7666,24 +7742,18 @@ class XianyuLive:
 
             # 处理聊天消息
             try:
-                # 安全地提取聊天消息信息
-                if not (isinstance(message, dict) and "1" in message and isinstance(message["1"], dict)):
-                    logger.error("消息格式错误：缺少必要的字段结构")
+                chat_message_info = self._extract_chat_message_info(message)
+                if not chat_message_info:
+                    logger.error("消息格式错误：缺少可识别的聊天消息字段")
                     return
 
-                message_1 = message["1"]
-                if not isinstance(message_1.get("10"), dict):
-                    logger.error("消息格式错误：缺少消息详情字段")
-                    return
-
-                create_time = int(message_1.get("5", 0))
-                message_10 = message_1["10"]
-                send_user_name = message_10.get("senderNick", message_10.get("reminderTitle", "未知用户"))
-                send_user_id = message_10.get("senderUserId", "unknown")
-                send_message = message_10.get("reminderContent", "")
-
-                chat_id_raw = message_1.get("2", "")
-                chat_id = chat_id_raw.split('@')[0] if '@' in str(chat_id_raw) else str(chat_id_raw)
+                create_time = chat_message_info['create_time']
+                send_user_name = chat_message_info['send_user_name']
+                send_user_id = chat_message_info['send_user_id']
+                send_message = chat_message_info['send_message']
+                chat_id = chat_message_info['chat_id']
+                message_10 = chat_message_info.get('message_10') or {}
+                session_type = chat_message_info.get('session_type', '1')
 
             except Exception as e:
                 logger.error(f"提取聊天消息信息失败: {self._safe_str(e)}")
@@ -7708,7 +7778,7 @@ class XianyuLive:
                 # 🔔 立即发送消息通知（独立于自动回复功能）
                 # 检查是否为群组消息，如果是群组消息则跳过通知
                 try:
-                    session_type = message_10.get("sessionType", "1")  # 默认为个人消息类型
+                    session_type = str(session_type)  # 兼容新旧消息结构
                     if session_type == "30":
                         logger.info(f"📱 检测到群组消息（sessionType=30），跳过消息通知")
                     else:

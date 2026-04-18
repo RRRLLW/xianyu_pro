@@ -136,10 +136,7 @@ export interface Card {
 // 发货规则相关类型 - 匹配后端接口
 export interface DeliveryRule {
   id: number
-  keyword?: string
-  cookie_id?: string
-  item_id?: string
-  item_title?: string
+  keyword: string
   card_id: number
   delivery_count: number
   enabled: boolean

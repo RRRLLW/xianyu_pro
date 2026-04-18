@@ -3,7 +3,7 @@ pipeline {
     
     environment {
         // GitHub 私有仓库配置
-        GITHUB_REPO = 'https://github.com/RRRLLW/xianyu_pro.git'
+        GITHUB_REPO = 'https://github.com/zhinianboke/xianyu-auto-reply.git'
         GITHUB_CREDENTIALS = 'github-token'  // 需要在 Jenkins 中配置
         
         // 阿里云镜像仓库配置

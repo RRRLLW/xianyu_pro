@@ -143,6 +143,12 @@ class RegisterResponse(BaseModel):
     message: str
 
 
+class AdminCreateUserRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+
+
 class SendCodeRequest(BaseModel):
     email: str
     session_id: Optional[str] = None
@@ -327,6 +333,176 @@ setup_file_logging()
 from loguru import logger
 logger.info("Web服务器启动，文件日志收集器已初始化")
 
+
+AUTO_SYNC_ENABLED = os.getenv('AUTO_SYNC_ENABLED', 'true').lower() not in ('0', 'false', 'no', 'off')
+AUTO_ITEM_SYNC_INTERVAL = max(180, int(os.getenv('AUTO_ITEM_SYNC_INTERVAL', '300')))
+AUTO_ORDER_SYNC_INTERVAL = max(20, int(os.getenv('AUTO_ORDER_SYNC_INTERVAL', '45')))
+AUTO_ITEM_SYNC_MAX_PAGES = max(0, int(os.getenv('AUTO_ITEM_SYNC_MAX_PAGES', '0')))
+AUTO_SYNC_START_DELAY = max(5, int(os.getenv('AUTO_SYNC_START_DELAY', '20')))
+AUTO_ORDER_SYNC_BATCH = max(1, int(os.getenv('AUTO_ORDER_SYNC_BATCH', '3')))
+
+_cookie_sync_locks = defaultdict(lambda: asyncio.Lock())
+
+
+def _is_cookie_enabled(cookie_id: str) -> bool:
+    try:
+        if cookie_manager.manager is None:
+            return True
+        return cookie_manager.manager.get_cookie_status(cookie_id)
+    except Exception:
+        return True
+
+
+def _get_enabled_cookie_ids() -> List[str]:
+    try:
+        return [cookie_id for cookie_id in db_manager.get_all_cookies().keys() if _is_cookie_enabled(cookie_id)]
+    except Exception as e:
+        logger.error(f'获取启用账号列表失败: {e}')
+        return []
+
+
+async def _sync_items_for_cookie(cookie_id: str) -> bool:
+    lock = _cookie_sync_locks[cookie_id]
+    if lock.locked():
+        logger.debug(f'【{cookie_id}】商品同步已在进行中，跳过重复任务')
+        return False
+
+    async with lock:
+        cookie_info = db_manager.get_cookie_by_id(cookie_id)
+        if not cookie_info or not cookie_info.get('cookies_str'):
+            logger.warning(f'【{cookie_id}】缺少有效Cookie，跳过商品自动同步')
+            return False
+
+        from XianyuAutoAsync import XianyuLive
+
+        xianyu_instance = XianyuLive(cookie_info['cookies_str'], cookie_id)
+        try:
+            max_pages = AUTO_ITEM_SYNC_MAX_PAGES if AUTO_ITEM_SYNC_MAX_PAGES > 0 else None
+            result = await xianyu_instance.get_all_items(max_pages=max_pages)
+            if result.get('success'):
+                logger.info(
+                    f'【{cookie_id}】商品自动同步完成: 共 {result.get("total_count", 0)} 件，保存 {result.get("total_saved", 0)} 件'
+                )
+                return True
+            logger.warning(f'【{cookie_id}】商品自动同步失败: {result}')
+            return False
+        except Exception as e:
+            logger.error(f'【{cookie_id}】商品自动同步异常: {e}')
+            return False
+        finally:
+            try:
+                await xianyu_instance.close_session()
+            except Exception:
+                pass
+
+
+async def _refresh_recent_orders_for_cookie(cookie_id: str) -> int:
+    try:
+        orders = db_manager.get_orders_by_cookie(cookie_id, limit=20)
+        active_orders = [
+            order for order in orders
+            if order.get('status') in ('unknown', 'processing', 'pending_ship', 'refunding')
+            or not order.get('amount')
+            or not order.get('spec_name')
+        ]
+        if not active_orders:
+            return 0
+
+        from XianyuAutoAsync import XianyuLive
+
+        instance = XianyuLive.get_instance(cookie_id)
+        temp_instance = None
+        if instance is None:
+            cookie_info = db_manager.get_cookie_by_id(cookie_id)
+            if not cookie_info or not cookie_info.get('cookies_str'):
+                return 0
+            temp_instance = XianyuLive(cookie_info['cookies_str'], cookie_id)
+            instance = temp_instance
+
+        refreshed = 0
+        for order in active_orders[:AUTO_ORDER_SYNC_BATCH]:
+            try:
+                result = await instance.fetch_order_detail_info(
+                    order_id=order.get('order_id'),
+                    item_id=order.get('item_id'),
+                    buyer_id=order.get('buyer_id')
+                )
+                if result:
+                    refreshed += 1
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                logger.warning(f'【{cookie_id}】刷新订单 {order.get("order_id")} 失败: {e}')
+
+        if temp_instance is not None:
+            try:
+                await temp_instance.close_session()
+            except Exception:
+                pass
+
+        if refreshed:
+            logger.info(f'【{cookie_id}】订单自动刷新完成: {refreshed} 条')
+        return refreshed
+    except Exception as e:
+        logger.error(f'【{cookie_id}】订单自动刷新异常: {e}')
+        return 0
+
+
+async def _auto_sync_loop():
+    logger.info('自动同步后台任务启动')
+    await asyncio.sleep(AUTO_SYNC_START_DELAY)
+
+    next_item_sync: Dict[str, float] = {}
+    next_order_sync: Dict[str, float] = {}
+
+    while True:
+        try:
+            cookie_ids = _get_enabled_cookie_ids()
+            now = time.time()
+
+            cookie_id_set = set(cookie_ids)
+            next_item_sync = {k: v for k, v in next_item_sync.items() if k in cookie_id_set}
+            next_order_sync = {k: v for k, v in next_order_sync.items() if k in cookie_id_set}
+
+            for cookie_id in cookie_ids:
+                if now >= next_order_sync.get(cookie_id, 0):
+                    await _refresh_recent_orders_for_cookie(cookie_id)
+                    next_order_sync[cookie_id] = time.time() + AUTO_ORDER_SYNC_INTERVAL
+
+                if now >= next_item_sync.get(cookie_id, 0):
+                    await _sync_items_for_cookie(cookie_id)
+                    next_item_sync[cookie_id] = time.time() + AUTO_ITEM_SYNC_INTERVAL
+
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            logger.info('自动同步后台任务已停止')
+            raise
+        except Exception as e:
+            logger.error(f'自动同步后台任务异常: {e}')
+            await asyncio.sleep(10)
+
+
+@app.on_event('startup')
+async def _start_auto_sync_background_task():
+    if not AUTO_SYNC_ENABLED:
+        logger.info('自动同步后台任务已禁用')
+        return
+    if getattr(app.state, 'auto_sync_task', None) is None:
+        app.state.auto_sync_task = asyncio.create_task(_auto_sync_loop())
+        logger.info('自动同步后台任务已创建')
+
+
+@app.on_event('shutdown')
+async def _stop_auto_sync_background_task():
+    task = getattr(app.state, 'auto_sync_task', None)
+    if task:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            app.state.auto_sync_task = None
+
 # 添加请求日志中间件
 @app.middleware("http")
 async def log_requests(request, call_next):
@@ -403,156 +579,46 @@ async def health_check():
         }
 
 
-# ==================== 版本检查和更新日志接口（GitHub Releases） ====================
+# ==================== 版本检查和更新日志接口 ====================
 import httpx
-
-GITHUB_UPDATE_OWNER = "RRRLLW"
-GITHUB_UPDATE_REPO = "xianyu_pro"
-GITHUB_RELEASES_API = f"https://api.github.com/repos/{GITHUB_UPDATE_OWNER}/{GITHUB_UPDATE_REPO}/releases"
-GITHUB_RELEASE_PAGE = f"https://github.com/{GITHUB_UPDATE_OWNER}/{GITHUB_UPDATE_REPO}/releases"
-UPDATE_CACHE_TTL = 600
-_update_cache: Dict[str, Dict[str, Any]] = {
-    "latest": {"timestamp": 0.0, "data": None},
-    "releases": {"timestamp": 0.0, "data": None},
-}
-
-
-def _read_local_version() -> str:
-    version_path = os.path.join(static_dir, 'version.txt')
-    if os.path.exists(version_path):
-        try:
-            with open(version_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    return content
-        except Exception as exc:
-            logger.warning(f"读取本地版本号失败: {exc}")
-    return 'v0.0.0'
-
-
-def _body_to_changes(body: str) -> List[str]:
-    if not body:
-        return []
-
-    changes: List[str] = []
-    for raw_line in body.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith(('-', '*', '+')):
-            line = line[1:].strip()
-        elif re.match(r'^\d+[\.)]\s+', line):
-            line = re.sub(r'^\d+[\.)]\s+', '', line).strip()
-        if line:
-            changes.append(line)
-        if len(changes) >= 12:
-            break
-
-    if changes:
-        return changes
-
-    compact = ' '.join(part.strip() for part in body.splitlines() if part.strip())
-    return [compact[:180]] if compact else []
-
-
-async def _fetch_github_json(url: str) -> Any:
-    headers = {
-        'Accept': 'application/vnd.github+json',
-        'User-Agent': 'xianyu-auto-reply-updater/1.0',
-        'X-GitHub-Api-Version': '2022-11-28',
-    }
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-        response = await client.get(url, headers=headers)
-        response.raise_for_status()
-        return response.json()
-
-
-async def _get_latest_release(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
-    cached = _update_cache['latest']
-    now = time.time()
-    if not force_refresh and cached['data'] and now - cached['timestamp'] < UPDATE_CACHE_TTL:
-        return cached['data']
-
-    latest = await _fetch_github_json(f"{GITHUB_RELEASES_API}/latest")
-    cached['timestamp'] = now
-    cached['data'] = latest
-    return latest
-
-
-async def _get_releases(force_refresh: bool = False) -> List[Dict[str, Any]]:
-    cached = _update_cache['releases']
-    now = time.time()
-    if not force_refresh and cached['data'] and now - cached['timestamp'] < UPDATE_CACHE_TTL:
-        return cached['data']
-
-    releases = await _fetch_github_json(f"{GITHUB_RELEASES_API}?per_page=10")
-    cached['timestamp'] = now
-    cached['data'] = releases
-    return releases
-
 
 @app.get('/api/version/check')
 async def check_version():
-    """检查 GitHub Releases 最新版本"""
-    current_version = _read_local_version()
+    """检查最新版本（代理外部接口）"""
     try:
-        latest = await _get_latest_release()
-        latest_version = latest.get('tag_name') or latest.get('name') or current_version
-        return {
-            'version': current_version,
-            'latest_version': latest_version,
-            'date': (latest.get('published_at') or '')[:10],
-            'changes': _body_to_changes(latest.get('body') or ''),
-            'download_url': latest.get('html_url') or GITHUB_RELEASE_PAGE,
-            'release_name': latest.get('name') or latest_version,
-            'repo': f'{GITHUB_UPDATE_OWNER}/{GITHUB_UPDATE_REPO}',
-        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get('https://xianyu.zhinianblog.cn/index.php?action=getVersion')
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except Exception:
+                    # 如果不是有效JSON，返回HTML内容
+                    return {"html": response.text}
+            else:
+                return {"error": True, "message": f"远程服务返回状态码: {response.status_code}"}
     except Exception as e:
         logger.error(f"检查版本失败: {e}")
-        return {
-            'version': current_version,
-            'latest_version': current_version,
-            'date': '',
-            'changes': ['无法连接 GitHub Releases，请稍后重试'],
-            'download_url': GITHUB_RELEASE_PAGE,
-            'error': False,
-            'message': str(e),
-            'repo': f'{GITHUB_UPDATE_OWNER}/{GITHUB_UPDATE_REPO}',
-        }
+        return {"error": True, "message": f"检查版本失败: {str(e)}"}
 
 
 @app.get('/api/version/changelog')
 async def get_changelog():
-    """从 GitHub Releases 获取更新日志"""
+    """获取更新日志（代理外部接口）"""
     try:
-        releases = await _get_releases()
-        changelog = []
-        for release in releases:
-            changelog.append({
-                'version': release.get('tag_name') or release.get('name') or '未命名版本',
-                'date': (release.get('published_at') or '')[:10],
-                'changes': _body_to_changes(release.get('body') or ''),
-                'download_url': release.get('html_url') or GITHUB_RELEASE_PAGE,
-            })
-        return {
-            'changelog': changelog,
-            'repo': f'{GITHUB_UPDATE_OWNER}/{GITHUB_UPDATE_REPO}',
-            'source': GITHUB_RELEASE_PAGE,
-        }
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get('https://xianyu.zhinianblog.cn/index.php?action=getUpdateInfo')
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except Exception:
+                    # 如果不是有效JSON，返回HTML内容
+                    return {"html": response.text}
+            else:
+                return {"error": True, "message": f"远程服务返回状态码: {response.status_code}"}
     except Exception as e:
         logger.error(f"获取更新日志失败: {e}")
-        return {
-            'changelog': [
-                {
-                    'version': '获取失败',
-                    'date': '',
-                    'changes': ['无法从 GitHub Releases 获取更新日志，请检查服务器网络'],
-                    'download_url': GITHUB_RELEASE_PAGE,
-                }
-            ],
-            'repo': f'{GITHUB_UPDATE_OWNER}/{GITHUB_UPDATE_REPO}',
-            'source': GITHUB_RELEASE_PAGE,
-        }
+        return {"error": True, "message": f"获取更新日志失败: {str(e)}"}
+
 
 # 服务 React 前端 SPA - 所有前端路由都返回 index.html
 async def serve_frontend():
@@ -1112,7 +1178,6 @@ async def send_verification_code(request: SendCodeRequest):
 
         # 根据验证码类型进行不同的检查
         if request.type == 'register':
-            # 注册验证码：检查邮箱是否已注册
             existing_user = db_manager.get_user_by_email(request.email)
             if existing_user:
                 return SendCodeResponse(
@@ -1120,13 +1185,19 @@ async def send_verification_code(request: SendCodeRequest):
                     message="该邮箱已被注册"
                 )
         elif request.type == 'login':
-            # 登录验证码：检查邮箱是否存在
             existing_user = db_manager.get_user_by_email(request.email)
             if not existing_user:
                 return SendCodeResponse(
                     success=False,
                     message="该邮箱未注册"
                 )
+
+        if not db_manager.is_email_delivery_configured():
+            logger.warning(f"发送验证码失败，SMTP未配置: {request.email}")
+            return SendCodeResponse(
+                success=False,
+                message="未配置SMTP邮件服务，暂时无法发送注册验证码。请先到系统设置配置SMTP，或让管理员在用户管理中直接创建账号。"
+            )
 
         # 生成验证码
         code = db_manager.generate_verification_code()
@@ -1494,7 +1565,7 @@ def get_cookies_details(current_user: Dict[str, Any] = Depends(get_current_user)
             'enabled': cookie_enabled,
             'auto_confirm': auto_confirm,
             'remark': remark,
-            'pause_duration': cookie_details.get('pause_duration', 10) if cookie_details else 10,
+            'pause_duration': cookie_details.get('pause_duration', 0) if cookie_details else 0,
             'username': cookie_details.get('username', '') if cookie_details else '',
             'login_password': cookie_details.get('password', '') if cookie_details else '',
             'show_browser': cookie_details.get('show_browser', False) if cookie_details else False
@@ -3309,6 +3380,45 @@ def update_system_setting(key: str, setting_data: SystemSettingIn, _: None = Dep
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post('/system-settings/test-email')
+async def test_email_setting(email: str, _: None = Depends(require_auth)):
+    """发送测试邮件，验证SMTP配置是否可用"""
+    from db_manager import db_manager
+    try:
+        if not db_manager.is_email_delivery_configured():
+            raise HTTPException(status_code=400, detail='SMTP配置不完整，请先填写SMTP服务器、端口、邮箱和授权码')
+
+        html_content = db_manager._build_email_html(
+            title='闲鱼自动回复系统 - SMTP测试邮件',
+            message_text='这是一封来自闲鱼自动回复系统的测试邮件。\n如果你收到这封邮件，说明SMTP配置已经生效，邮件样式也已更新。',
+            hero_title='SMTP 测试成功',
+            hero_subtitle='系统已经具备发送验证码和通知邮件的能力。',
+            badge_text='邮件测试',
+            highlight_value='PASS',
+            highlight_label='发送状态',
+            tips=[
+                '你现在可以继续测试注册验证码、登录验证码等邮件链路。',
+                '如需更换发件邮箱，请回到系统设置修改 SMTP 参数后再次测试。'
+            ],
+            footer_note='这是系统测试邮件，用于验证 SMTP 配置和邮件模板是否正常。'
+        )
+
+        ok = await db_manager.send_plain_email(
+            email,
+            '闲鱼自动回复系统 - SMTP测试邮件',
+            '这是一封来自闲鱼自动回复系统的测试邮件。\n\n如果你收到这封邮件，说明SMTP配置已经生效。',
+            html_content
+        )
+        if ok:
+            return {'success': True, 'message': '测试邮件发送成功'}
+        raise HTTPException(status_code=400, detail='测试邮件发送失败，请检查SMTP配置或邮箱授权码')
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"测试邮件发送失败: {e}")
+        raise HTTPException(status_code=500, detail='测试邮件发送失败')
+
+
 # ------------------------- 注册设置接口 -------------------------
 
 @app.get('/registration-status')
@@ -4426,39 +4536,19 @@ def get_delivery_rules(current_user: Dict[str, Any] = Depends(get_current_user))
 
 @app.post("/delivery-rules")
 def create_delivery_rule(rule_data: dict, current_user: Dict[str, Any] = Depends(get_current_user)):
-    """创建新发货规则（按指定商品发货）"""
+    """创建新发货规则"""
     try:
         from db_manager import db_manager
         user_id = current_user['user_id']
-        cookie_id = (rule_data.get('cookie_id') or '').strip()
-        item_id = (rule_data.get('item_id') or '').strip()
-        card_id = rule_data.get('card_id')
-
-        if not item_id:
-            item_id = (rule_data.get('keyword') or '').strip()
-        if not item_id:
-            raise HTTPException(status_code=400, detail="请选择指定商品或填写商品ID")
-        if not card_id:
-            raise HTTPException(status_code=400, detail="请选择关联卡券")
-
-        item_info = db_manager.get_item_info(cookie_id, item_id) if cookie_id else None
-        item_title = ''
-        if item_info:
-            item_title = (item_info.get('item_title') or '').strip()
-
         rule_id = db_manager.create_delivery_rule(
-            keyword=item_title or item_id,
-            cookie_id=cookie_id,
-            item_id=item_id,
-            card_id=card_id,
+            keyword=rule_data.get('keyword'),
+            card_id=rule_data.get('card_id'),
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
             description=rule_data.get('description'),
             user_id=user_id
         )
         return {"id": rule_id, "message": "发货规则创建成功"}
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -4484,34 +4574,9 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
     try:
         from db_manager import db_manager
         user_id = current_user['user_id']
-        cookie_id = rule_data.get('cookie_id')
-        item_id = rule_data.get('item_id')
-        keyword = rule_data.get('keyword')
-
-        if cookie_id is not None:
-            cookie_id = cookie_id.strip()
-        if item_id is not None:
-            item_id = item_id.strip()
-
-        if item_id is None and keyword is not None:
-            item_id = keyword.strip()
-
-        if item_id:
-            if keyword is None:
-                if cookie_id:
-                    item_info = db_manager.get_item_info(cookie_id, item_id)
-                    if item_info:
-                        keyword = (item_info.get('item_title') or '').strip() or item_id
-                    else:
-                        keyword = item_id
-                else:
-                    keyword = item_id
-
         success = db_manager.update_delivery_rule(
             rule_id=rule_id,
-            keyword=keyword,
-            cookie_id=cookie_id,
-            item_id=item_id,
+            keyword=rule_data.get('keyword'),
             card_id=rule_data.get('card_id'),
             delivery_count=rule_data.get('delivery_count', 1),
             enabled=rule_data.get('enabled', True),
@@ -4522,8 +4587,6 @@ def update_delivery_rule(rule_id: int, rule_data: dict, current_user: Dict[str, 
             return {"message": "发货规则更新成功"}
         else:
             raise HTTPException(status_code=404, detail="发货规则不存在")
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5277,41 +5340,43 @@ async def get_all_items_from_account(request: dict, _: None = Depends(require_au
         if not cookie_id:
             return {"success": False, "message": "缺少cookie_id参数"}
 
-        # 获取指定账号的cookie信息
-        cookie_info = db_manager.get_cookie_by_id(cookie_id)
-        if not cookie_info:
-            return {"success": False, "message": "未找到指定的账号信息"}
+        lock = _cookie_sync_locks[cookie_id]
+        if lock.locked():
+            return {"success": False, "message": "当前账号正在同步商品，请稍后再试"}
 
-        cookies_str = cookie_info.get('cookies_str', '')
-        if not cookies_str:
-            return {"success": False, "message": "账号cookie信息为空"}
+        async with lock:
+            cookie_info = db_manager.get_cookie_by_id(cookie_id)
+            if not cookie_info:
+                return {"success": False, "message": "未找到指定的账号信息"}
 
-        # 创建XianyuLive实例，传入正确的cookie_id
-        from XianyuAutoAsync import XianyuLive
-        xianyu_instance = XianyuLive(cookies_str, cookie_id)
+            cookies_str = cookie_info.get('cookies_str', '')
+            if not cookies_str:
+                return {"success": False, "message": "账号cookie信息为空"}
 
-        # 调用获取所有商品信息的方法（自动分页）
-        logger.info(f"开始获取账号 {cookie_id} 的所有商品信息")
-        result = await xianyu_instance.get_all_items()
+            from XianyuAutoAsync import XianyuLive
+            xianyu_instance = XianyuLive(cookies_str, cookie_id)
 
-        # 关闭session
-        await xianyu_instance.close_session()
+            try:
+                logger.info(f"开始获取账号 {cookie_id} 的所有商品信息")
+                result = await xianyu_instance.get_all_items()
+            finally:
+                await xianyu_instance.close_session()
 
-        if result.get('error'):
-            logger.error(f"获取商品信息失败: {result['error']}")
-            return {"success": False, "message": result['error']}
-        else:
-            total_count = result.get('total_count', 0)
-            total_pages = result.get('total_pages', 1)
-            saved_count = result.get('total_saved', 0)
-            logger.info(f"成功获取账号 {cookie_id} 的 {total_count} 个商品（共{total_pages}页），保存 {saved_count} 个")
-            return {
-                "success": True,
-                "message": f"成功获取商品，共 {total_count} 件，保存 {saved_count} 件",
-                "total_count": total_count,
-                "total_pages": total_pages,
-                "saved_count": saved_count
-            }
+            if result.get('error'):
+                logger.error(f"获取商品信息失败: {result['error']}")
+                return {"success": False, "message": result['error']}
+            else:
+                total_count = result.get('total_count', 0)
+                total_pages = result.get('total_pages', 1)
+                saved_count = result.get('total_saved', 0)
+                logger.info(f"成功获取账号 {cookie_id} 的 {total_count} 个商品（共{total_pages}页），保存 {saved_count} 个")
+                return {
+                    "success": True,
+                    "message": f"成功获取商品，共 {total_count} 件，保存 {saved_count} 件",
+                    "total_count": total_count,
+                    "total_pages": total_pages,
+                    "saved_count": saved_count
+                }
 
     except Exception as e:
         logger.error(f"获取账号商品信息异常: {str(e)}")
@@ -5462,6 +5527,39 @@ def get_all_users(admin_user: Dict[str, Any] = Depends(require_admin)):
     except Exception as e:
         log_with_user('error', f"获取用户信息失败: {str(e)}", admin_user)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/admin/users')
+def create_admin_user(request: AdminCreateUserRequest, admin_user: Dict[str, Any] = Depends(require_admin)):
+    """管理员直接创建用户，无需邮箱验证码"""
+    from db_manager import db_manager
+    try:
+        username = (request.username or '').strip()
+        email = (request.email or '').strip()
+        password = request.password or ''
+
+        if not username:
+            raise HTTPException(status_code=400, detail='用户名不能为空')
+        if not email:
+            raise HTTPException(status_code=400, detail='邮箱不能为空')
+        if len(password) < 6:
+            raise HTTPException(status_code=400, detail='密码长度至少6位')
+
+        if db_manager.get_user_by_username(username):
+            raise HTTPException(status_code=400, detail='用户名已存在')
+        if db_manager.get_user_by_email(email):
+            raise HTTPException(status_code=400, detail='该邮箱已被注册')
+
+        if not db_manager.create_user(username, email, password):
+            raise HTTPException(status_code=400, detail='创建用户失败')
+
+        log_with_user('info', f"管理员创建用户成功: {username}", admin_user)
+        return {'success': True, 'message': '用户创建成功'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"管理员创建用户失败: {e}")
+        raise HTTPException(status_code=500, detail='创建用户失败')
+
 
 @app.delete('/admin/users/{user_id}')
 def delete_user(user_id: int, admin_user: Dict[str, Any] = Depends(require_admin)):
@@ -6350,32 +6448,62 @@ def update_item_multi_quantity_delivery(cookie_id: str, item_id: str, delivery_d
 # ==================== 订单管理接口 ====================
 
 @app.get('/api/orders')
-def get_user_orders(current_user: Dict[str, Any] = Depends(get_current_user)):
-    """获取当前用户的订单信息"""
+def get_user_orders(
+    cookie_id: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """获取当前用户的订单信息（支持账号筛选、状态筛选和分页）"""
     try:
         from db_manager import db_manager
 
         user_id = current_user['user_id']
-        log_with_user('info', "查询用户订单信息", current_user)
+        page = max(page, 1)
+        page_size = max(1, min(page_size, 200))
+        log_with_user('info', f"查询用户订单信息: cookie_id={cookie_id or 'all'}, status={status or 'all'}, page={page}, page_size={page_size}", current_user)
 
-        # 获取用户的所有Cookie
         user_cookies = db_manager.get_all_cookies(user_id)
+        allowed_cookie_ids = set(user_cookies.keys())
 
-        # 获取所有订单数据
+        if cookie_id:
+            if cookie_id not in allowed_cookie_ids:
+                raise HTTPException(status_code=403, detail='无权限访问该账号订单')
+            target_cookie_ids = [cookie_id]
+        else:
+            target_cookie_ids = list(allowed_cookie_ids)
+
         all_orders = []
-        for cookie_id in user_cookies.keys():
-            orders = db_manager.get_orders_by_cookie(cookie_id, limit=1000)  # 增加限制数量
-            # 为每个订单添加cookie_id信息
+        for current_cookie_id in target_cookie_ids:
+            orders = db_manager.get_orders_by_cookie(current_cookie_id, limit=1000)
             for order in orders:
-                order['cookie_id'] = cookie_id
+                order['cookie_id'] = current_cookie_id
                 all_orders.append(order)
 
-        # 按创建时间倒序排列
-        all_orders.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        if status:
+            all_orders = [order for order in all_orders if (order.get('status') or '') == status]
 
-        log_with_user('info', f"用户订单查询成功，共 {len(all_orders)} 条记录", current_user)
-        return {"success": True, "data": all_orders, "total": len(all_orders)}
+        all_orders.sort(key=lambda x: (x.get('updated_at') or '', x.get('created_at') or ''), reverse=True)
 
+        total = len(all_orders)
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged_orders = all_orders[start:end]
+
+        log_with_user('info', f"用户订单查询成功，共 {total} 条记录，返回 {len(paged_orders)} 条", current_user)
+        return {
+            "success": True,
+            "data": paged_orders,
+            "total": total,
+            "total_pages": total_pages,
+            "page": page,
+            "page_size": page_size
+        }
+
+    except HTTPException:
+        raise
     except Exception as e:
         log_with_user('error', f"查询用户订单失败: {str(e)}", current_user)
         raise HTTPException(status_code=500, detail=f"查询订单失败: {str(e)}")

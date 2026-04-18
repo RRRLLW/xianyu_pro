@@ -114,7 +114,7 @@ class DBManager:
                 user_id INTEGER NOT NULL,
                 auto_confirm INTEGER DEFAULT 1,
                 remark TEXT DEFAULT '',
-                pause_duration INTEGER DEFAULT 10,
+                pause_duration INTEGER DEFAULT 0,
                 username TEXT DEFAULT '',
                 password TEXT DEFAULT '',
                 show_browser INTEGER DEFAULT 0,
@@ -300,13 +300,11 @@ class DBManager:
                 self._execute_sql(cursor, "ALTER TABLE item_info ADD COLUMN multi_quantity_delivery BOOLEAN DEFAULT FALSE")
                 logger.info("item_info 表 multi_quantity_delivery 列添加完成")
 
-            # 创建自动发货规则表（按指定商品精确匹配）
+            # 创建自动发货规则表
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS delivery_rules (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                keyword TEXT,
-                cookie_id TEXT,
-                item_id TEXT,
+                keyword TEXT NOT NULL,
                 card_id INTEGER NOT NULL,
                 delivery_count INTEGER DEFAULT 1,
                 enabled BOOLEAN DEFAULT TRUE,
@@ -314,31 +312,8 @@ class DBManager:
                 delivery_times INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                user_id INTEGER,
-                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
-                FOREIGN KEY (cookie_id) REFERENCES cookies(id) ON DELETE CASCADE
+                FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
             )
-            ''')
-
-            # 检查并补齐 delivery_rules 表新字段（兼容旧数据库）
-            try:
-                self._execute_sql(cursor, "SELECT cookie_id FROM delivery_rules LIMIT 1")
-            except sqlite3.OperationalError:
-                self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN cookie_id TEXT")
-
-            try:
-                self._execute_sql(cursor, "SELECT item_id FROM delivery_rules LIMIT 1")
-            except sqlite3.OperationalError:
-                self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN item_id TEXT")
-
-            try:
-                self._execute_sql(cursor, "SELECT user_id FROM delivery_rules LIMIT 1")
-            except sqlite3.OperationalError:
-                self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN user_id INTEGER")
-
-            self._execute_sql(cursor, '''
-            CREATE INDEX IF NOT EXISTS idx_delivery_rules_item_lookup
-            ON delivery_rules(cookie_id, item_id, enabled)
             ''')
 
             # 创建默认回复表（支持账号级别和商品级别）
@@ -499,13 +474,13 @@ class DBManager:
             ('registration_enabled', 'true', '是否开启用户注册'),
             ('show_default_login_info', 'true', '是否显示默认登录信息'),
             ('login_captcha_enabled', 'true', '登录滑动验证码开关'),
-            ('smtp_server', 'smtp.163.com', 'SMTP服务器地址'),
-            ('smtp_port', '465', 'SMTP端口'),
-            ('smtp_user', 'xianyuguanjia@163.com', 'SMTP登录用户名（发件邮箱）'),
-            ('smtp_password', 'VQWBn9wcTP6X877e', 'SMTP登录密码/授权码'),
-            ('smtp_from', 'xianyuguanjia@163.com', '发件人显示名（留空则使用用户名）'),
-            ('smtp_use_tls', 'false', '是否启用TLS'),
-            ('smtp_use_ssl', 'true', '是否启用SSL'),
+            ('smtp_server', '', 'SMTP服务器地址'),
+            ('smtp_port', '587', 'SMTP端口'),
+            ('smtp_user', '', 'SMTP登录用户名（发件邮箱）'),
+            ('smtp_password', '', 'SMTP登录密码/授权码'),
+            ('smtp_from', '', '发件人显示名（留空则使用用户名）'),
+            ('smtp_use_tls', 'true', '是否启用TLS'),
+            ('smtp_use_ssl', 'false', '是否启用SSL'),
             ('qq_reply_secret_key', 'xianyu_qq_reply_2024', 'QQ回复消息API秘钥')
             ''')
 
@@ -549,7 +524,7 @@ class DBManager:
             # 检查cookies表是否存在pause_duration列
             if 'pause_duration' not in cookie_columns:
                 logger.info("添加cookies表的pause_duration列...")
-                cursor.execute("ALTER TABLE cookies ADD COLUMN pause_duration INTEGER DEFAULT 10")
+                cursor.execute("ALTER TABLE cookies ADD COLUMN pause_duration INTEGER DEFAULT 0")
                 logger.info("数据库迁移完成：添加pause_duration列")
 
         except Exception as e:
@@ -738,23 +713,6 @@ class DBManager:
                     # user_id列存在，更新NULL值
                     self._execute_sql(cursor, "UPDATE delivery_rules SET user_id = ? WHERE user_id IS NULL", (admin_user_id,))
 
-                # 为delivery_rules表添加cookie_id字段（如果不存在）
-                try:
-                    self._execute_sql(cursor, "SELECT cookie_id FROM delivery_rules LIMIT 1")
-                except sqlite3.OperationalError:
-                    self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN cookie_id TEXT")
-
-                # 为delivery_rules表添加item_id字段（如果不存在）
-                try:
-                    self._execute_sql(cursor, "SELECT item_id FROM delivery_rules LIMIT 1")
-                except sqlite3.OperationalError:
-                    self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN item_id TEXT")
-
-                self._execute_sql(cursor, '''
-                CREATE INDEX IF NOT EXISTS idx_delivery_rules_item_lookup
-                ON delivery_rules(cookie_id, item_id, enabled)
-                ''')
-
                 # 为notification_channels表添加user_id字段（如果不存在）
                 try:
                     self._execute_sql(cursor, "SELECT user_id FROM notification_channels LIMIT 1")
@@ -814,23 +772,6 @@ class DBManager:
                 # 处理keywords表的唯一约束问题
                 # 由于SQLite不支持直接修改约束，我们需要重建表
                 self._migrate_keywords_table_constraints(cursor)
-
-
-            # 确保delivery_rules表具备按指定商品发货所需字段（独立于admin用户是否存在）
-            try:
-                self._execute_sql(cursor, "SELECT cookie_id FROM delivery_rules LIMIT 1")
-            except sqlite3.OperationalError:
-                self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN cookie_id TEXT")
-
-            try:
-                self._execute_sql(cursor, "SELECT item_id FROM delivery_rules LIMIT 1")
-            except sqlite3.OperationalError:
-                self._execute_sql(cursor, "ALTER TABLE delivery_rules ADD COLUMN item_id TEXT")
-
-            self._execute_sql(cursor, '''
-            CREATE INDEX IF NOT EXISTS idx_delivery_rules_item_lookup
-            ON delivery_rules(cookie_id, item_id, enabled)
-            ''')
 
             self.conn.commit()
             logger.info(f"admin用户ID更新完成")
@@ -1392,7 +1333,7 @@ class DBManager:
                         'user_id': result[2],
                         'auto_confirm': bool(result[3]),
                         'remark': result[4] or '',
-                        'pause_duration': result[5] if result[5] is not None else 10,  # 0是有效值，表示不暂停
+                        'pause_duration': result[5] if result[5] is not None else 0,  # 0表示不暂停
                         'username': result[6] or '',
                         'password': result[7] or '',
                         'show_browser': bool(result[8]) if result[8] is not None else False,
@@ -1451,18 +1392,18 @@ class DBManager:
                 result = cursor.fetchone()
                 if result:
                     if result[0] is None:
-                        logger.warning(f"账号 {cookie_id} 的pause_duration为NULL，使用默认值10分钟并修复数据库")
+                        logger.warning(f"账号 {cookie_id} 的pause_duration为NULL，使用默认值0分钟并修复数据库")
                         # 修复数据库中的NULL值
-                        self._execute_sql(cursor, "UPDATE cookies SET pause_duration = 10 WHERE id = ?", (cookie_id,))
+                        self._execute_sql(cursor, "UPDATE cookies SET pause_duration = 0 WHERE id = ?", (cookie_id,))
                         self.conn.commit()
-                        return 10
+                        return 0
                     return result[0]  # 返回实际值，包括0（0表示不暂停）
                 else:
-                    logger.warning(f"账号 {cookie_id} 未找到记录，使用默认值10分钟")
-                    return 10
+                    logger.warning(f"账号 {cookie_id} 未找到记录，使用默认值0分钟")
+                    return 0
             except Exception as e:
                 logger.error(f"获取账号自动回复暂停时间失败: {e}")
-                return 10
+                return 0
 
     def update_cookie_account_info(self, cookie_id: str, cookie_value: str = None, username: str = None, password: str = None, show_browser: bool = None, user_id: int = None) -> bool:
         """更新Cookie的账号信息（包括cookie值、用户名、密码和显示浏览器设置）
@@ -2073,14 +2014,34 @@ class DBManager:
                 cursor = self.conn.cursor()
                 if item_id:
                     cursor.execute('''
-                    SELECT reply_content, item_id FROM item_replay
+                    SELECT enabled, reply_content, reply_once, reply_image_url, item_id
+                    FROM default_replies
                     WHERE cookie_id = ? AND item_id = ?
                     ''', (cookie_id, item_id))
                     result = cursor.fetchone()
                     if result:
-                        reply_content, item_id_val = result
+                        enabled, reply_content, reply_once, reply_image_url, item_id_val = result
                         return {
+                            'enabled': bool(enabled),
                             'reply_content': reply_content or '',
+                            'reply_once': bool(reply_once) if reply_once is not None else False,
+                            'reply_image_url': reply_image_url or '',
+                            'item_id': item_id_val
+                        }
+
+                    # 兼容旧版 item_replay 表中的历史商品回复
+                    cursor.execute('''
+                    SELECT reply_content, item_id FROM item_replay
+                    WHERE cookie_id = ? AND item_id = ?
+                    ''', (cookie_id, item_id))
+                    legacy_result = cursor.fetchone()
+                    if legacy_result:
+                        reply_content, item_id_val = legacy_result
+                        return {
+                            'enabled': True,
+                            'reply_content': reply_content or '',
+                            'reply_once': False,
+                            'reply_image_url': '',
                             'item_id': item_id_val
                         }
                 else:
@@ -2088,16 +2049,16 @@ class DBManager:
                     SELECT enabled, reply_content, reply_once, reply_image_url, item_id FROM default_replies 
                     WHERE cookie_id = ? AND item_id IS NULL
                     ''', (cookie_id,))
-                result = cursor.fetchone()
-                if result:
-                    enabled, reply_content, reply_once, reply_image_url, item_id_val = result
-                    return {
-                        'enabled': bool(enabled),
-                        'reply_content': reply_content or '',
-                        'reply_once': bool(reply_once) if reply_once is not None else False,
-                        'reply_image_url': reply_image_url or '',
-                        'item_id': item_id_val
-                    }
+                    result = cursor.fetchone()
+                    if result:
+                        enabled, reply_content, reply_once, reply_image_url, item_id_val = result
+                        return {
+                            'enabled': bool(enabled),
+                            'reply_content': reply_content or '',
+                            'reply_once': bool(reply_once) if reply_once is not None else False,
+                            'reply_image_url': reply_image_url or '',
+                            'item_id': item_id_val
+                        }
                 return None
             except Exception as e:
                 logger.error(f"获取默认回复设置失败: {e}")
@@ -2959,8 +2920,124 @@ class DBManager:
                 logger.error(f"验证邮箱验证码失败: {e}")
                 return False
 
+    def is_email_delivery_configured(self) -> bool:
+        """是否已配置可用的SMTP邮件发送能力"""
+        try:
+            smtp_server = (self.get_system_setting('smtp_server') or '').strip()
+            smtp_port = int(self.get_system_setting('smtp_port') or 0)
+            smtp_user = (self.get_system_setting('smtp_user') or '').strip()
+            smtp_password = (self.get_system_setting('smtp_password') or '').strip()
+            return bool(smtp_server and smtp_port and smtp_user and smtp_password)
+        except Exception as e:
+            logger.error(f"检查SMTP配置失败: {e}")
+            return False
+
+    async def send_plain_email(self, email: str, subject: str, text_content: str, html_content: str = None) -> bool:
+        """发送邮件，优先发送带 HTML 模板的富文本邮件，仅使用已配置的SMTP。"""
+        try:
+            smtp_server = (self.get_system_setting('smtp_server') or '').strip()
+            smtp_port = int(self.get_system_setting('smtp_port') or 0)
+            smtp_user = (self.get_system_setting('smtp_user') or '').strip()
+            smtp_password = (self.get_system_setting('smtp_password') or '').strip()
+            smtp_from = (self.get_system_setting('smtp_from') or '').strip() or smtp_user
+            smtp_use_tls = (self.get_system_setting('smtp_use_tls') or 'true').lower() == 'true'
+            smtp_use_ssl = (self.get_system_setting('smtp_use_ssl') or 'false').lower() == 'true'
+
+            if not (smtp_server and smtp_port and smtp_user and smtp_password):
+                logger.warning("SMTP配置不完整，无法发送邮件")
+                return False
+
+            if html_content is None:
+                html_content = self._build_email_html(subject, text_content)
+
+            return await self._send_email_via_smtp(
+                email, subject, text_content, html_content,
+                smtp_server, smtp_port, smtp_user, smtp_password,
+                smtp_from, smtp_use_tls, smtp_use_ssl
+            )
+        except Exception as e:
+            logger.error(f"发送普通邮件失败: {e}")
+            return False
+
+    def _build_email_html(self, title: str, message_text: str, hero_title: str = None,
+                         hero_subtitle: str = None, badge_text: str = '系统通知',
+                         highlight_value: str = None, highlight_label: str = None,
+                         tips: list = None, footer_note: str = None) -> str:
+        """构建统一的 HTML 邮件模板，让验证码/测试邮件观感更现代。"""
+        try:
+            import html
+
+            safe_title = html.escape(title or '闲鱼自动回复系统')
+            safe_hero_title = html.escape(hero_title or title or '闲鱼自动回复系统')
+            safe_hero_subtitle = html.escape(hero_subtitle or '安全、清晰、易读的邮件通知')
+            safe_badge = html.escape(badge_text or '系统通知')
+            safe_footer = html.escape(footer_note or '此邮件由系统自动发送，请勿直接回复。')
+
+            paragraphs = []
+            for raw_line in (message_text or '').splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                paragraphs.append(f'<p style="margin:0 0 12px;color:#334155;font-size:14px;line-height:24px;">{html.escape(line)}</p>')
+            paragraphs_html = ''.join(paragraphs) or '<p style="margin:0;color:#334155;font-size:14px;line-height:24px;">请查看邮件内容。</p>'
+
+            highlight_html = ''
+            if highlight_value:
+                highlight_html = (
+                    '<div style="margin:22px 0;padding:22px 18px;border-radius:18px;'
+                    'background:linear-gradient(135deg,#eff6ff 0%,#eef2ff 100%);'
+                    'border:1px solid #dbeafe;text-align:center;">'
+                    f'<div style="font-size:12px;color:#64748b;letter-spacing:1px;text-transform:uppercase;">{html.escape(highlight_label or "核心信息")}</div>'
+                    f'<div style="margin-top:10px;font-size:32px;font-weight:800;letter-spacing:6px;color:#0f172a;">{html.escape(highlight_value)}</div>'
+                    '</div>'
+                )
+
+            tips_html = ''
+            if tips:
+                tip_items = ''.join(
+                    f'<li style="margin:0 0 10px;color:#475569;line-height:22px;">{html.escape(str(item))}</li>'
+                    for item in tips if str(item).strip()
+                )
+                if tip_items:
+                    tips_html = (
+                        '<div style="margin-top:22px;padding:18px;border-radius:16px;background:#f8fafc;border:1px solid #e2e8f0;">'
+                        '<div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:12px;">温馨提醒</div>'
+                        f'<ul style="padding-left:18px;margin:0;">{tip_items}</ul>'
+                        '</div>'
+                    )
+
+            return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{safe_title}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'PingFang SC','Microsoft YaHei',sans-serif;">
+    <div style="padding:32px 12px;">
+      <div style="max-width:620px;margin:0 auto;background:#ffffff;border-radius:28px;overflow:hidden;box-shadow:0 18px 45px rgba(15,23,42,.12);border:1px solid #e2e8f0;">
+        <div style="padding:28px 32px;background:linear-gradient(135deg,#0f172a 0%,#1d4ed8 55%,#38bdf8 100%);">
+          <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.16);color:#e0f2fe;font-size:12px;font-weight:700;letter-spacing:.6px;">{safe_badge}</div>
+          <h1 style="margin:18px 0 10px;color:#ffffff;font-size:28px;line-height:1.35;">{safe_hero_title}</h1>
+          <p style="margin:0;color:rgba(255,255,255,.82);font-size:14px;line-height:24px;">{safe_hero_subtitle}</p>
+        </div>
+        <div style="padding:30px 32px 10px;">{paragraphs_html}{highlight_html}{tips_html}</div>
+        <div style="padding:18px 32px 30px;">
+          <div style="padding-top:18px;border-top:1px solid #e2e8f0;color:#94a3b8;font-size:12px;line-height:20px;">
+            <div style="margin-bottom:4px;color:#475569;font-weight:600;">闲鱼自动回复系统</div>
+            <div>{safe_footer}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>"""
+        except Exception as e:
+            logger.error(f"构建HTML邮件模板失败: {e}")
+            return None
+
     async def send_verification_email(self, email: str, code: str) -> bool:
-        """发送验证码邮件（仅使用SMTP，不再回退外部API）"""
+        """发送验证码邮件，仅使用系统已配置的SMTP。"""
         try:
             subject = "闲鱼自动回复系统 - 邮箱验证码"
             text_content = f"""【闲鱼自动回复系统】邮箱验证码
@@ -2977,55 +3054,55 @@ class DBManager:
 • 如非本人操作，请忽略此邮件
 • 系统不会主动索要您的验证码
 
-如果您在使用过程中遇到任何问题，请联系我们的技术支持团队。
-感谢您选择闲鱼自动回复系统！
+如果您在使用过程中遇到任何问题，请联系系统管理员。
 
 ---
-此邮件由系统自动发送，请勿直接回复
-© 2025 闲鱼自动回复系统"""
+此邮件由系统自动发送，请勿直接回复"""
 
-            try:
-                smtp_server = self.get_system_setting('smtp_server') or ''
-                smtp_port = int(self.get_system_setting('smtp_port') or 0)
-                smtp_user = self.get_system_setting('smtp_user') or ''
-                smtp_password = self.get_system_setting('smtp_password') or ''
-                smtp_from = (self.get_system_setting('smtp_from') or '').strip() or smtp_user
-                smtp_use_tls = (self.get_system_setting('smtp_use_tls') or 'false').lower() == 'true'
-                smtp_use_ssl = (self.get_system_setting('smtp_use_ssl') or 'true').lower() == 'true'
-            except Exception as e:
-                logger.error(f"读取SMTP系统设置失败: {e}")
-                return False
+            html_content = self._build_email_html(
+                title=subject,
+                message_text="您好！\n感谢您使用闲鱼自动回复系统。为了确保账户安全，请使用以下验证码完成邮箱验证。",
+                hero_title="邮箱验证码",
+                hero_subtitle="请在 10 分钟内完成验证，超时后需重新获取。",
+                badge_text="安全验证",
+                highlight_value=code,
+                highlight_label="本次验证码",
+                tips=[
+                    "验证码有效期为 10 分钟，请及时使用。",
+                    "请勿将验证码分享给任何人，系统不会主动索要验证码。",
+                    "如果不是你本人操作，请忽略这封邮件并检查账号安全。"
+                ],
+                footer_note="此邮件由系统自动发送，请勿直接回复；如有异常请联系管理员。"
+            )
 
-            if not (smtp_server and smtp_port and smtp_user and smtp_password):
-                logger.error(f"SMTP配置不完整，已禁止使用外部邮件API: {email}")
+            if not self.is_email_delivery_configured():
+                logger.warning(f"SMTP配置不完整，无法发送验证码邮件: {email}")
                 return False
 
             logger.info(f"使用SMTP方式发送验证码邮件: {email}")
-            return await self._send_email_via_smtp(
-                email, subject, text_content,
-                smtp_server, smtp_port, smtp_user,
-                smtp_password, smtp_from, smtp_use_tls, smtp_use_ssl
-            )
+            return await self.send_plain_email(email, subject, text_content, html_content)
 
         except Exception as e:
             logger.error(f"发送验证码邮件异常: {e}")
             return False
 
-    async def _send_email_via_smtp(self, email: str, subject: str, text_content: str,
+    async def _send_email_via_smtp(self, email: str, subject: str, text_content: str, html_content: str,
                                  smtp_server: str, smtp_port: int, smtp_user: str,
                                  smtp_password: str, smtp_from: str, smtp_use_tls: bool, smtp_use_ssl: bool) -> bool:
-        """使用SMTP方式发送邮件"""
+        """使用SMTP方式发送邮件，兼容文本和 HTML 内容。"""
         try:
             import smtplib
             from email.mime.text import MIMEText
             from email.mime.multipart import MIMEMultipart
 
-            msg = MIMEMultipart()
+            msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
             msg['From'] = smtp_from
             msg['To'] = email
 
             msg.attach(MIMEText(text_content, 'plain', 'utf-8'))
+            if html_content:
+                msg.attach(MIMEText(html_content, 'html', 'utf-8'))
 
             if smtp_use_ssl:
                 server = smtplib.SMTP_SSL(smtp_server, smtp_port)
@@ -3041,15 +3118,15 @@ class DBManager:
             server.sendmail(smtp_user, [email], msg.as_string())
             server.quit()
 
-            logger.info(f"验证码邮件发送成功(SMTP): {email}")
+            logger.info(f"邮件发送成功(SMTP): {email}")
             return True
         except Exception as e:
-            logger.error(f"SMTP发送验证码邮件失败: {e}")
-            return False
+            logger.error(f"SMTP发送邮件失败: {e}")
+            return await self._send_email_via_api(email, subject, text_content)
 
     async def _send_email_via_api(self, email: str, subject: str, text_content: str) -> bool:
-        """外部邮件API已禁用，仅保留方法占位避免旧调用报错"""
-        logger.warning(f"外部邮件API已禁用，拒绝发送验证码邮件: {email}")
+        """兼容保留：不再使用隐藏外部邮件API。"""
+        logger.warning(f"外部邮件API已停用，拒绝向 {email} 发送邮件。请改用SMTP配置。")
         return False
 
     # ==================== 卡券管理方法 ====================
@@ -3337,21 +3414,19 @@ class DBManager:
 
     # ==================== 自动发货规则方法 ====================
 
-    def create_delivery_rule(self, keyword: str = None, card_id: int = None, delivery_count: int = 1,
-                           enabled: bool = True, description: str = None, user_id: int = None,
-                           cookie_id: str = None, item_id: str = None):
-        """创建发货规则（按指定商品精确匹配）"""
+    def create_delivery_rule(self, keyword: str, card_id: int, delivery_count: int = 1,
+                           enabled: bool = True, description: str = None, user_id: int = None):
+        """创建发货规则"""
         with self.lock:
             try:
                 cursor = self.conn.cursor()
-                normalized_keyword = (keyword or item_id or '').strip() or None
                 cursor.execute('''
-                INSERT INTO delivery_rules (keyword, cookie_id, item_id, card_id, delivery_count, enabled, description, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (normalized_keyword, cookie_id, item_id, card_id, delivery_count, enabled, description, user_id))
+                INSERT INTO delivery_rules (keyword, card_id, delivery_count, enabled, description, user_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', (keyword, card_id, delivery_count, enabled, description, user_id))
                 self.conn.commit()
                 rule_id = cursor.lastrowid
-                logger.info(f"创建发货规则成功: 商品={item_id or normalized_keyword}, 卡券ID={card_id}, 规则ID={rule_id}")
+                logger.info(f"创建发货规则成功: {keyword} -> 卡券ID {card_id} (规则ID: {rule_id})")
                 return rule_id
             except Exception as e:
                 logger.error(f"创建发货规则失败: {e}")
@@ -3364,29 +3439,23 @@ class DBManager:
                 cursor = self.conn.cursor()
                 if user_id is not None:
                     cursor.execute('''
-                    SELECT dr.id, dr.keyword, dr.cookie_id, dr.item_id,
-                           COALESCE(ii.item_title, dr.keyword, dr.item_id, '未指定商品') as item_title,
-                           dr.card_id, dr.delivery_count, dr.enabled,
+                    SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
                            c.is_multi_spec, c.spec_name, c.spec_value
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
-                    LEFT JOIN item_info ii ON dr.cookie_id = ii.cookie_id AND dr.item_id = ii.item_id
                     WHERE dr.user_id = ?
                     ORDER BY dr.created_at DESC
                     ''', (user_id,))
                 else:
                     cursor.execute('''
-                    SELECT dr.id, dr.keyword, dr.cookie_id, dr.item_id,
-                           COALESCE(ii.item_title, dr.keyword, dr.item_id, '未指定商品') as item_title,
-                           dr.card_id, dr.delivery_count, dr.enabled,
+                    SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type,
                            c.is_multi_spec, c.spec_name, c.spec_value
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
-                    LEFT JOIN item_info ii ON dr.cookie_id = ii.cookie_id AND dr.item_id = ii.item_id
                     ORDER BY dr.created_at DESC
                     ''')
 
@@ -3395,21 +3464,18 @@ class DBManager:
                     rules.append({
                         'id': row[0],
                         'keyword': row[1],
-                        'cookie_id': row[2],
-                        'item_id': row[3],
-                        'item_title': row[4],
-                        'card_id': row[5],
-                        'delivery_count': row[6],
-                        'enabled': bool(row[7]),
-                        'description': row[8],
-                        'delivery_times': row[9],
-                        'created_at': row[10],
-                        'updated_at': row[11],
-                        'card_name': row[12],
-                        'card_type': row[13],
-                        'is_multi_spec': bool(row[14]) if row[14] is not None else False,
-                        'spec_name': row[15],
-                        'spec_value': row[16]
+                        'card_id': row[2],
+                        'delivery_count': row[3],
+                        'enabled': bool(row[4]),
+                        'description': row[5],
+                        'delivery_times': row[6],
+                        'created_at': row[7],
+                        'updated_at': row[8],
+                        'card_name': row[9],
+                        'card_type': row[10],
+                        'is_multi_spec': bool(row[11]) if row[11] is not None else False,
+                        'spec_name': row[12],
+                        'spec_value': row[13]
                     })
 
                 return rules
@@ -3488,26 +3554,20 @@ class DBManager:
                 cursor = self.conn.cursor()
                 if user_id is not None:
                     self._execute_sql(cursor, '''
-                    SELECT dr.id, dr.keyword, dr.cookie_id, dr.item_id,
-                           COALESCE(ii.item_title, dr.keyword, dr.item_id, '未指定商品') as item_title,
-                           dr.card_id, dr.delivery_count, dr.enabled,
+                    SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
-                    LEFT JOIN item_info ii ON dr.cookie_id = ii.cookie_id AND dr.item_id = ii.item_id
                     WHERE dr.id = ? AND dr.user_id = ?
                     ''', (rule_id, user_id))
                 else:
                     self._execute_sql(cursor, '''
-                    SELECT dr.id, dr.keyword, dr.cookie_id, dr.item_id,
-                           COALESCE(ii.item_title, dr.keyword, dr.item_id, '未指定商品') as item_title,
-                           dr.card_id, dr.delivery_count, dr.enabled,
+                    SELECT dr.id, dr.keyword, dr.card_id, dr.delivery_count, dr.enabled,
                            dr.description, dr.delivery_times, dr.created_at, dr.updated_at,
                            c.name as card_name, c.type as card_type
                     FROM delivery_rules dr
                     LEFT JOIN cards c ON dr.card_id = c.id
-                    LEFT JOIN item_info ii ON dr.cookie_id = ii.cookie_id AND dr.item_id = ii.item_id
                     WHERE dr.id = ?
                     ''', (rule_id,))
 
@@ -3516,18 +3576,15 @@ class DBManager:
                     return {
                         'id': row[0],
                         'keyword': row[1],
-                        'cookie_id': row[2],
-                        'item_id': row[3],
-                        'item_title': row[4],
-                        'card_id': row[5],
-                        'delivery_count': row[6],
-                        'enabled': bool(row[7]),
-                        'description': row[8],
-                        'delivery_times': row[9],
-                        'created_at': row[10],
-                        'updated_at': row[11],
-                        'card_name': row[12],
-                        'card_type': row[13]
+                        'card_id': row[2],
+                        'delivery_count': row[3],
+                        'enabled': bool(row[4]),
+                        'description': row[5],
+                        'delivery_times': row[6],
+                        'created_at': row[7],
+                        'updated_at': row[8],
+                        'card_name': row[9],
+                        'card_type': row[10]
                     }
                 return None
             except Exception as e:
@@ -3536,8 +3593,7 @@ class DBManager:
 
     def update_delivery_rule(self, rule_id: int, keyword: str = None, card_id: int = None,
                            delivery_count: int = None, enabled: bool = None,
-                           description: str = None, user_id: int = None,
-                           cookie_id: str = None, item_id: str = None):
+                           description: str = None, user_id: int = None):
         """更新发货规则（支持用户隔离）"""
         with self.lock:
             try:
@@ -3550,12 +3606,6 @@ class DBManager:
                 if keyword is not None:
                     update_fields.append("keyword = ?")
                     params.append(keyword)
-                if cookie_id is not None:
-                    update_fields.append("cookie_id = ?")
-                    params.append(cookie_id)
-                if item_id is not None:
-                    update_fields.append("item_id = ?")
-                    params.append(item_id)
                 if card_id is not None:
                     update_fields.append("card_id = ?")
                     params.append(card_id)
@@ -3738,138 +3788,6 @@ class DBManager:
 
             except Exception as e:
                 logger.error(f"获取发货规则失败: {e}")
-                return []
-
-
-    def get_delivery_rules_by_item(self, cookie_id: str, item_id: str):
-        """根据指定商品精确获取普通发货规则"""
-        with self.lock:
-            try:
-                cursor = self.conn.cursor()
-                cursor.execute('''
-                SELECT dr.id, dr.keyword, dr.cookie_id, dr.item_id, dr.card_id, dr.delivery_count, dr.enabled,
-                       dr.description, dr.delivery_times,
-                       c.name as card_name, c.type as card_type, c.api_config,
-                       c.text_content, c.data_content, c.image_url, c.enabled as card_enabled, c.description as card_description,
-                       c.delay_seconds as card_delay_seconds,
-                       c.is_multi_spec, c.spec_name, c.spec_value
-                FROM delivery_rules dr
-                LEFT JOIN cards c ON dr.card_id = c.id
-                WHERE dr.enabled = 1 AND c.enabled = 1
-                  AND dr.item_id = ?
-                  AND (dr.cookie_id = ? OR dr.cookie_id IS NULL OR dr.cookie_id = '')
-                  AND (c.is_multi_spec = 0 OR c.is_multi_spec IS NULL)
-                ORDER BY CASE WHEN dr.cookie_id = ? THEN 0 ELSE 1 END, dr.delivery_times ASC, dr.id ASC
-                ''', (item_id, cookie_id, cookie_id))
-
-                rules = []
-                for row in cursor.fetchall():
-                    api_config = row[11]
-                    if api_config:
-                        try:
-                            import json
-                            api_config = json.loads(api_config)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-                    rules.append({
-                        'id': row[0],
-                        'keyword': row[1],
-                        'cookie_id': row[2],
-                        'item_id': row[3],
-                        'card_id': row[4],
-                        'delivery_count': row[5],
-                        'enabled': bool(row[6]),
-                        'description': row[7],
-                        'delivery_times': row[8] or 0,
-                        'card_name': row[9],
-                        'card_type': row[10],
-                        'api_config': api_config,
-                        'text_content': row[12],
-                        'data_content': row[13],
-                        'image_url': row[14],
-                        'card_enabled': bool(row[15]),
-                        'card_description': row[16],
-                        'card_delay_seconds': row[17] or 0,
-                        'is_multi_spec': bool(row[18]) if row[18] is not None else False,
-                        'spec_name': row[19],
-                        'spec_value': row[20],
-                    })
-
-                if rules:
-                    logger.info(f"找到指定商品普通发货规则: cookie_id={cookie_id}, item_id={item_id}, count={len(rules)}")
-                else:
-                    logger.info(f"未找到指定商品普通发货规则: cookie_id={cookie_id}, item_id={item_id}")
-                return rules
-            except Exception as e:
-                logger.error(f"根据指定商品获取发货规则失败: {e}")
-                return []
-
-    def get_delivery_rules_by_item_and_spec(self, cookie_id: str, item_id: str, spec_name: str = None, spec_value: str = None):
-        """根据指定商品和规格精确获取多规格发货规则"""
-        with self.lock:
-            try:
-                if not (spec_name and spec_value):
-                    logger.info(f"多规格规则匹配缺少规格信息: cookie_id={cookie_id}, item_id={item_id}")
-                    return []
-
-                cursor = self.conn.cursor()
-                cursor.execute('''
-                SELECT dr.id, dr.keyword, dr.cookie_id, dr.item_id, dr.card_id, dr.delivery_count, dr.enabled,
-                       dr.description, dr.delivery_times,
-                       c.name as card_name, c.type as card_type, c.api_config,
-                       c.text_content, c.data_content, c.enabled as card_enabled,
-                       c.description as card_description, c.delay_seconds as card_delay_seconds,
-                       c.is_multi_spec, c.spec_name, c.spec_value
-                FROM delivery_rules dr
-                LEFT JOIN cards c ON dr.card_id = c.id
-                WHERE dr.enabled = 1 AND c.enabled = 1
-                  AND dr.item_id = ?
-                  AND (dr.cookie_id = ? OR dr.cookie_id IS NULL OR dr.cookie_id = '')
-                  AND c.is_multi_spec = 1 AND c.spec_name = ? AND c.spec_value = ?
-                ORDER BY CASE WHEN dr.cookie_id = ? THEN 0 ELSE 1 END, dr.delivery_times ASC, dr.id ASC
-                ''', (item_id, cookie_id, spec_name, spec_value, cookie_id))
-
-                rules = []
-                for row in cursor.fetchall():
-                    api_config = row[11]
-                    if api_config:
-                        try:
-                            import json
-                            api_config = json.loads(api_config)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-                    rules.append({
-                        'id': row[0],
-                        'keyword': row[1],
-                        'cookie_id': row[2],
-                        'item_id': row[3],
-                        'card_id': row[4],
-                        'delivery_count': row[5],
-                        'enabled': bool(row[6]),
-                        'description': row[7],
-                        'delivery_times': row[8] or 0,
-                        'card_name': row[9],
-                        'card_type': row[10],
-                        'api_config': api_config,
-                        'text_content': row[12],
-                        'data_content': row[13],
-                        'card_enabled': bool(row[14]),
-                        'card_description': row[15],
-                        'card_delay_seconds': row[16] or 0,
-                        'is_multi_spec': bool(row[17]) if row[17] is not None else False,
-                        'spec_name': row[18],
-                        'spec_value': row[19],
-                    })
-
-                if rules:
-                    logger.info(f"找到指定商品多规格发货规则: cookie_id={cookie_id}, item_id={item_id}, spec={spec_name}:{spec_value}, count={len(rules)}")
-                else:
-                    logger.info(f"未找到指定商品多规格发货规则: cookie_id={cookie_id}, item_id={item_id}, spec={spec_name}:{spec_value}")
-                return rules
-            except Exception as e:
-                logger.error(f"根据指定商品和规格获取发货规则失败: {e}")
                 return []
 
     def delete_card(self, card_id: int):
@@ -4667,7 +4585,8 @@ class DBManager:
                         'username': row[1],
                         'email': row[2],
                         'created_at': row[3],
-                        'updated_at': row[4]
+                        'updated_at': row[4],
+                        'is_admin': row[1] == 'admin'
                     })
 
                 return users

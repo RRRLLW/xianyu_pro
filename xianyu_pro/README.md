@@ -13,7 +13,7 @@
 
 # xianyu-auto-reply 安全漏洞披露报告
 
-**项目地址**: https://github.com/RRRLLW/xianyu_pro  
+**项目地址**: https://github.com/zhinianboke/xianyu-auto-reply  
 **审计日期**: 2024-12-19  
 **严重程度**: 高危  
 **影响用户**: 数千至上万用户
@@ -200,7 +200,7 @@ api_url = "http://xianyu.zhinianblog.cn/?action=statistics"
 
 ```typescript
 // About.tsx 第44行
-const response = await fetch('[已停用]')
+const response = await fetch('https://xianyu.zhinianblog.cn/index.php?action=getVersion')
 
 // About.tsx 第85行
 const response = await fetch('https://xianyu.zhinianblog.cn/index.php?action=getChangelog')
@@ -513,7 +513,7 @@ curl "http://notice.zhinianblog.cn/sendPrivateMsg?qq=test&msg=test"
 
 | 接口 | URL | 状态 |
 |-----|-----|-----|
-| 版本检查 | `[已停用]` | 404 |
+| 版本检查 | `https://xianyu.zhinianblog.cn/index.php?action=getVersion` | 404 |
 | 商品API | `https://selfapi.zhinianboke.com/api/getItemDetail` | 404 |
 
 ---
@@ -541,8 +541,8 @@ curl "http://notice.zhinianblog.cn/sendPrivateMsg?qq=test&msg=test"
 
 # 🐟 闲鱼自动回复系统
 
-[![GitHub](https://img.shields.io/badge/GitHub-zhinianboke%2Fxianyu--auto--reply-blue?logo=github)](https://github.com/RRRLLW/xianyu_pro)
-[![Docker](https://img.shields.io/badge/Docker-一键部署-blue?logo=docker)](https://github.com/RRRLLW/xianyu_pro#-快速开始)
+[![GitHub](https://img.shields.io/badge/GitHub-zhinianboke%2Fxianyu--auto--reply-blue?logo=github)](https://github.com/zhinianboke/xianyu-auto-reply)
+[![Docker](https://img.shields.io/badge/Docker-一键部署-blue?logo=docker)](https://github.com/zhinianboke/xianyu-auto-reply#-快速开始)
 [![Python](https://img.shields.io/badge/Python-3.11+-green?logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-仅供学习-red.svg)](#️-版权声明与使用条款)
 
@@ -776,7 +776,7 @@ xianyu-auto-reply/
 
 ## 🚀 云服务器推荐
 
-### 【划算云】国内外云服务器、全球CDN、挂机宝  
+### 【划算云】国内外云服务器、全球CDN、挂机宝  www.hsykj.com
 
 
 ## 🚀 快速开始
@@ -841,7 +841,7 @@ docker run -d \
 #### 🌍 国际版（推荐海外用户）
 ```bash
 # 1. 克隆项目
-git clone https://github.com/RRRLLW/xianyu_pro.git
+git clone https://github.com/zhinianboke/xianyu-auto-reply.git
 cd xianyu-auto-reply
 
 # 2. 使用完整版配置（包含Redis缓存等增强功能）
@@ -854,7 +854,7 @@ docker-compose up -d --build
 #### 🇨🇳 中国版（推荐国内用户）
 ```bash
 # 1. 克隆项目
-git clone https://github.com/RRRLLW/xianyu_pro.git
+git clone https://github.com/zhinianboke/xianyu-auto-reply.git
 cd xianyu-auto-reply
 
 # 2. 使用中国镜像源配置（下载速度更快）
@@ -877,7 +877,7 @@ docker-compose -f docker-compose-cn.yml up -d --build
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/RRRLLW/xianyu_pro.git
+git clone https://github.com/zhinianboke/xianyu-auto-reply.git
 cd xianyu-auto-reply
 
 # 2. 创建虚拟环境（推荐）
@@ -1405,7 +1405,7 @@ docker start xianyu-auto-reply
 欢迎为项目做出贡献！您可以通过以下方式参与：
 
 ### 📝 提交问题
-- 在 [GitHub Issues](https://github.com/RRRLLW/xianyu_pro/issues) 中报告Bug
+- 在 [GitHub Issues](https://github.com/zhinianboke/xianyu-auto-reply/issues) 中报告Bug
 - 提出新功能建议和改进意见
 - 分享使用经验和最佳实践
 
@@ -1456,7 +1456,7 @@ docker-compose up -d
 
 ```bash
 # 克隆项目并从源码构建
-git clone https://github.com/RRRLLW/xianyu_pro.git
+git clone https://github.com/zhinianboke/xianyu-auto-reply.git
 cd xianyu-auto-reply
 ./docker-deploy.sh
 ```
@@ -1515,7 +1515,7 @@ powershell -ExecutionPolicy Bypass -File docker-deploy.bat
 ### 👤 原作者信息
 
 - **项目作者**：zhinianboke
-- **项目地址**：https://github.com/RRRLLW/xianyu_pro
+- **项目地址**：https://github.com/zhinianboke/xianyu-auto-reply
 - **联系方式**：通过GitHub Issues或项目交流群
 
 ### ⚠️ 免责声明
@@ -1529,7 +1529,7 @@ powershell -ExecutionPolicy Bypass -File docker-deploy.bat
 
 如发现本项目存在侵权内容，请通过以下方式联系：
 
-- **GitHub Issues**：https://github.com/RRRLLW/xianyu_pro/issues
+- **GitHub Issues**：https://github.com/zhinianboke/xianyu-auto-reply/issues
 - **邮箱联系**：在项目交流群中获取联系方式
 
 我们将在收到通知后**立即处理**并删除相关内容。

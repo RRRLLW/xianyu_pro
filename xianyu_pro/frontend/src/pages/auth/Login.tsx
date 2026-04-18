@@ -251,7 +251,7 @@ export function Login() {
             {registrationEnabled && (<p className="text-center mt-6 text-slate-500 dark:text-slate-400 text-sm">还没有账号？{' '}<Link to="/register" className="text-blue-600 dark:text-blue-400 font-medium hover:text-blue-700 dark:hover:text-blue-300">立即注册</Link></p>)}
             {showDefaultLogin && (<div className="mt-6 pt-6 border-t border-slate-100 dark:border-slate-700"><button type="button" onClick={fillDefaultCredentials} className="w-full flex items-center justify-between p-3 rounded-md bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors text-sm"><div className="text-left"><p className="text-slate-500 dark:text-slate-400">演示账号</p><p className="text-slate-900 dark:text-white font-medium">admin / admin123</p></div><span className="text-blue-600 dark:text-blue-400">一键填充 →</span></button></div>)}
           </div>
-
+          <p className="text-center mt-6 text-slate-400 dark:text-slate-500 text-xs">© {new Date().getFullYear()} 划算云服务器 · <a href="https://www.hsykj.com" target="_blank" rel="noopener noreferrer" className="hover:text-blue-600 dark:hover:text-blue-400 ml-1 transition-colors">www.hsykj.com</a></p>
         </motion.div>
       </div>
     </div>

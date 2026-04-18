@@ -74,7 +74,7 @@ FROM base AS runtime
 LABEL maintainer="zhinianboke" \
       version="2.1.0" \
       description="闲鱼自动回复系统 - 企业级多用户版本，支持自动发货和免拼发货" \
-      repository="https://github.com/RRRLLW/xianyu_pro" \
+      repository="https://github.com/zhinianboke/xianyu-auto-reply" \
       license="仅供学习使用，禁止商业用途" \
       author="zhinianboke" \
       build-date="" \

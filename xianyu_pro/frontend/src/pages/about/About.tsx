@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ArrowUpCircle, BarChart3, Bell, Bot, CheckCircle, Code, FileText, Github, Globe, Heart, Loader2, MessageSquare, RefreshCw, Truck, UserCheck, X } from 'lucide-react'
+import { ArrowUpCircle, BarChart3, Bell, Bot, CheckCircle, Code, FileText, Github, Globe, Heart, Loader2, MessageCircle, MessageSquare, RefreshCw, Truck, UserCheck, Users, X } from 'lucide-react'
 
 interface UpdateInfo {
   version: string
@@ -10,7 +10,7 @@ interface UpdateInfo {
 
 // 版本比较函数
 function compareVersions(v1: string, v2: string): number {
-  const normalize = (v: string) => (v || '').replace(/^v/, '').split('.').map((part) => Number(part) || 0)
+  const normalize = (v: string) => v.replace(/^v/, '').split('.').map(Number)
   const parts1 = normalize(v1)
   const parts2 = normalize(v2)
   for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
@@ -23,6 +23,7 @@ function compareVersions(v1: string, v2: string): number {
 }
 
 export function About() {
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [version, setVersion] = useState('加载中...')
   const [totalUsers, setTotalUsers] = useState(0)
 
@@ -52,12 +53,7 @@ export function About() {
       }
 
       // 支持 {data: "v1.0.5"} 格式
-      const currentVersion = result.version || version || 'v0.0.0'
-      if (!version || version === '加载中...') {
-        setVersion(currentVersion)
-      }
-
-      const remoteVersion = result.data || result.latest_version || result.version
+      const remoteVersion = result.data || result.version || result.latest_version
       if (remoteVersion) {
         setLatestVersion(remoteVersion)
         setUpdateInfo({
@@ -204,6 +200,66 @@ export function About() {
         </div>
       </div>
 
+      {/* Contact Groups */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="vben-card">
+          <div className="vben-card-header">
+            <h2 className="vben-card-title">
+              <MessageCircle className="w-4 h-4 text-green-500" />
+              微信群
+            </h2>
+          </div>
+          <div className="vben-card-body text-center">
+            <div
+              className="w-[160px] h-[160px] mx-auto overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer transition-all duration-200 hover:scale-105 hover:shadow-lg hover:border-green-400"
+              onClick={() => setPreviewImage('/static/wechat-group.png')}
+            >
+              <img
+                src="/static/wechat-group.png"
+                alt="微信群二维码"
+                className="w-full h-full object-cover object-center"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none'
+                  const parent = (e.target as HTMLImageElement).parentElement
+                  if (parent) {
+                    parent.innerHTML = '<p class="text-slate-400 dark:text-slate-500 py-12 text-sm">二维码未配置</p>'
+                  }
+                }}
+              />
+            </div>
+            <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">扫码加入微信技术交流群</p>
+          </div>
+        </div>
+        <div className="vben-card">
+          <div className="vben-card-header">
+            <h2 className="vben-card-title">
+              <Users className="w-4 h-4 text-blue-500" />
+              QQ群
+            </h2>
+          </div>
+          <div className="vben-card-body text-center">
+            <div
+              className="w-[160px] h-[160px] mx-auto overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer transition-all duration-200 hover:scale-105 hover:shadow-lg hover:border-blue-400"
+              onClick={() => setPreviewImage('/static/qq-group.png')}
+            >
+              <img
+                src="/static/qq-group.png"
+                alt="QQ群二维码"
+                className="w-full h-full object-cover object-center"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none'
+                  const parent = (e.target as HTMLImageElement).parentElement
+                  if (parent) {
+                    parent.innerHTML = '<p class="text-slate-400 dark:text-slate-500 py-12 text-sm">二维码未配置</p>'
+                  }
+                }}
+              />
+            </div>
+            <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">扫码加入QQ技术交流群</p>
+          </div>
+        </div>
+      </div>
+
       {/* Features */}
       <div className="vben-card">
         <div className="vben-card-header">
@@ -247,14 +303,24 @@ export function About() {
         <div className="vben-card-body">
           <div className="flex flex-wrap gap-3">
             <a
-              href="https://github.com/RRRLLW"
+              href="https://github.com/zhinianboke"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
             >
               <Github className="w-4 h-4 text-slate-600 dark:text-slate-300" />
-              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">RRRLLW</span>
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">zhinianboke</span>
               <span className="text-xs text-slate-500 dark:text-slate-400">项目作者</span>
+            </a>
+            <a
+              href="https://github.com/legeling"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+            >
+              <Github className="w-4 h-4 text-slate-600 dark:text-slate-300" />
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">legeling</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">前端重构</span>
             </a>
           </div>
         </div>
@@ -268,7 +334,7 @@ export function About() {
         <div className="vben-card-body">
           <div className="flex gap-3">
             <a
-              href="https://github.com/RRRLLW/xianyu_pro"
+              href="https://github.com/zhinianboke/xianyu-auto-reply"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-900 text-white hover:bg-gray-800 transition-colors text-sm"
@@ -285,7 +351,41 @@ export function About() {
         <p className="flex items-center justify-center gap-1">
           Made with <Heart className="w-3.5 h-3.5 text-red-500" /> by Open Source Community
         </p>
+        <p className="mt-1 text-xs">
+          赞助商：
+          <a
+            href="https://www.hsykj.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-500 dark:text-blue-400 hover:underline ml-1"
+          >
+            划算云服务器
+          </a>
+        </p>
       </div>
+
+      {/* 图片预览弹窗 */}
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div className="relative max-w-[90vw] max-h-[90vh]">
+            <button
+              onClick={() => setPreviewImage(null)}
+              className="absolute -top-10 right-0 p-2 text-white hover:text-gray-300 transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <img
+              src={previewImage}
+              alt="预览"
+              className="max-w-full max-h-[85vh] rounded-lg shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        </div>
+      )}
 
       {/* 更新详情弹窗 */}
       {showUpdateModal && updateInfo && (
@@ -335,7 +435,7 @@ export function About() {
 
               <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
                 <p className="text-xs text-blue-600 dark:text-blue-400">
-                  <strong>提示：</strong>更新来源已切换到你的 GitHub 仓库，可直接前往 Releases 下载或用 git pull 更新。
+                  <strong>提示：</strong>请前往 GitHub 下载最新版本，或使用 git pull 更新代码。
                 </p>
               </div>
             </div>
@@ -344,7 +444,7 @@ export function About() {
                 稍后再说
               </button>
               <a
-                href={updateInfo.download_url || 'https://github.com/RRRLLW/xianyu_pro/releases'}
+                href={updateInfo.download_url || 'https://github.com/zhinianboke/xianyu-auto-reply/releases'}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="btn-ios-primary"

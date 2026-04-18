@@ -116,6 +116,18 @@ export function Items() {
     loadItems()
   }, [_hasHydrated, isAuthenticated, token, selectedAccount])
 
+  useEffect(() => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+
+    const timer = window.setInterval(() => {
+      if (!fetching) {
+        loadItems()
+      }
+    }, 60000)
+
+    return () => window.clearInterval(timer)
+  }, [_hasHydrated, isAuthenticated, token, selectedAccount, fetching])
+
   const handleDelete = async (item: Item) => {
     if (!confirm('确定要删除这个商品吗？')) return
     try {

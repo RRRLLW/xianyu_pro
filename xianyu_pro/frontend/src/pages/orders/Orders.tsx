@@ -79,6 +79,16 @@ export function Orders() {
     loadOrders(1)
   }, [_hasHydrated, isAuthenticated, token, selectedAccount, selectedStatus])
 
+  useEffect(() => {
+    if (!_hasHydrated || !isAuthenticated || !token) return
+
+    const timer = window.setInterval(() => {
+      loadOrders(currentPage)
+    }, 15000)
+
+    return () => window.clearInterval(timer)
+  }, [_hasHydrated, isAuthenticated, token, selectedAccount, selectedStatus, currentPage])
+
   const handleDelete = async (id: string) => {
     if (!confirm('确定要删除这个订单吗？')) return
     try {
